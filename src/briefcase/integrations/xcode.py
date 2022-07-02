@@ -97,18 +97,18 @@ Re-run Briefcase once that installation is complete.
 ** WARNING: Unable to determine if Xcode is installed                  **
 *************************************************************************
 
-   Briefcase will proceed, assuming everything is OK. If you experience
-   problems, this is almost certainly the cause of those problems.
+    Briefcase will proceed, assuming everything is OK. If you experience
+    problems, this is almost certainly the cause of those problems.
 
-   Please report this as a bug at:
+    Please report this as a bug at:
 
-     https://github.com/beeware/briefcase/issues/new
+       https://github.com/beeware/briefcase/issues/new
 
-   In your report, please including the output from running:
+    In your report, please including the output from running:
 
-     xcode-select --install
+        $ xcode-select --install
 
-   from the command prompt.
+    from the command prompt.
 
 *************************************************************************
 """
@@ -117,8 +117,8 @@ Re-run Briefcase once that installation is complete.
 
 def ensure_xcode_is_installed(
     command,
-    xcode_location=None,
     min_version=None,
+    xcode_location="/Applications/Xcode.app",
 ):
     """Determine if Xcode is installed; and if so, that it meets minimum
     version requirements.
@@ -127,48 +127,41 @@ def ensure_xcode_is_installed(
     that is installed doesn't meet the minimum requirement.
 
     :param command: The command that needs to perform the verification check.
-    :param xcode_location: The location where Xcode should be installed.
-        If not given, the location returned by `xcode-select -p` will be used.
     :param min_version: The minimum allowed version of Xcode, specified as a
         tuple of integers (e.g., (11, 2, 1)). Default: ``None``, meaning there
         is no minimum version.
+    :param xcode_location: The location where we expect to find an Xcode install.
+        Used for testing; defaults to ``/Applications/Xcode.app``.
     """
-    # Try the direct approach. Look for the Xcode folder that is created
-    # when you install from the App store.
-
-    if xcode_location is None:
-
-        try:
-            output = command.subprocess.check_output(
-                ["xcode-select", "-p"],
-                stderr=subprocess.STDOUT,
-            )
-            xcode_location = output.strip()
-        except subprocess.CalledProcessError as e:
-            raise BriefcaseCommandError(
-                """\
-Could not find Xcode installation.
+    # Check for *any* version of Xcode tools. xcode-select returns:
+    #  * The path to the currently active Xcode install; or
+    #  * error code 2 - No Xcode installation
+    try:
+        command.subprocess.check_output(
+            ["xcode-select", "-p"],
+            stderr=subprocess.STDOUT,
+        )
+    except subprocess.CalledProcessError as e:
+        raise BriefcaseCommandError(
+            """\
+Could not find an Xcode installation.
 
 To select an existing Xcode installation, run:
 
     $ sudo xcode-select --switch path/to/Xcode.app
 
-or install Xcode from the macOS App Store. Re-run Briefcase afterwards.
+or install Xcode from the macOS App Store. Once you have installed Xcode,
+you can re-run Briefcase.
 """
-            ) from e
-
-    if not Path(xcode_location).exists():
-        raise BriefcaseCommandError(
-            """\
-Xcode is not installed.
-
-You can install Xcode from the macOS App Store.
-
-Re-run Briefcase once that installation is complete.
-"""
-        )
+        ) from e
 
     try:
+        # xcodebuild -version returns the version of Xcode that is currently
+        # selected. If the current Xcode is a commandline tools install,
+        # returns an error:
+        #   xcode-select: error: tool 'xcodebuild' requires Xcode, but active
+        #   developer directory '/Library/Developer/CommandLineTools' is a
+        #   command line tools instance
         output = command.subprocess.check_output(
             ["xcodebuild", "-version"],
             stderr=subprocess.STDOUT,
@@ -207,18 +200,18 @@ Re-run Briefcase once that installation is complete.
 ** WARNING: Unable to determine the version of Xcode that is installed **
 *************************************************************************
 
-   Briefcase will proceed, assuming everything is OK. If you experience
-   problems, this is almost certainly the cause of those problems.
+    Briefcase will proceed, assuming everything is OK. If you experience
+    problems, this is almost certainly the cause of those problems.
 
-   Please report this as a bug at:
+    Please report this as a bug at:
 
-     https://github.com/beeware/briefcase/issues/new
+      https://github.com/beeware/briefcase/issues/new
 
-   In your report, please including the output from running:
+    In your report, please including the output from running:
 
-     xcodebuild -version
+        $ xcodebuild -version
 
-   from the command prompt.
+    from the command prompt.
 
 *************************************************************************
 """
@@ -226,12 +219,26 @@ Re-run Briefcase once that installation is complete.
 
     except subprocess.CalledProcessError as e:
         if " is a command line tools instance" in e.output:
-            raise BriefcaseCommandError(
-                """\
-Xcode may be installed, but the active developer directory is a
-command line tools instance. To make the default Xcode install the
-active developer directory, run:
+            # Commandline tools are currently selected. Look for the existence
+            # of the default folder; if that folder doesn't exist, we can't
+            # conclude that Xcode *isn't* installed.
+            if Path(xcode_location).exists():
+                preamble = """\
+Xcode appears to be installed, but the active developer directory is the Xcode
+command line tools. To make Xcode the active developer directory, run:
+"""
+            else:
+                preamble = """\
+You have the Xcode command line tools installed; however, Briefcase requires
+a full Xcode install. Xcode can be downloaded from the macOS App Store.
 
+Once you have installed Xcode, you can make it the active developer directory
+by running:
+"""
+
+            raise BriefcaseCommandError(
+                preamble
+                + """
     $ sudo xcode-select --switch /Applications/Xcode.app
 
 Or, to use a version of Xcode installed in a non-default location:
@@ -245,7 +252,7 @@ and then re-run Briefcase.
         else:
             raise BriefcaseCommandError(
                 """\
-The Xcode install appears to exist, but Briefcase was unable to
+An Xcode install appears to exist, but Briefcase was unable to
 determine the current Xcode version. Running:
 
     $ xcodebuild -version
@@ -321,18 +328,18 @@ You need to accept the Xcode license before Briefcase can package your app.
 ** WARNING: Unable to determine if the Xcode license has been accepted **
 *************************************************************************
 
-   Briefcase will proceed, assuming everything is OK. If you experience
-   problems, this is almost certainly the cause of those problems.
+    Briefcase will proceed, assuming everything is OK. If you experience
+    problems, this is almost certainly the cause of those problems.
 
-   Please report this as a bug at:
+    Please report this as a bug at:
 
-     https://github.com/beeware/briefcase/issues/new
+      https://github.com/beeware/briefcase/issues/new
 
-   In your report, please including the output from running:
+    In your report, please including the output from running:
 
-     sudo xcodebuild -license
+        $ sudo xcodebuild -license
 
-   from the command prompt.
+    from the command prompt.
 
 *************************************************************************
 """
@@ -344,18 +351,18 @@ You need to accept the Xcode license before Briefcase can package your app.
 ** WARNING: Unable to determine if the Xcode license has been accepted **
 *************************************************************************
 
-   Briefcase will proceed, assuming everything is OK. If you experience
-   problems, this is almost certainly the cause of those problems.
+    Briefcase will proceed, assuming everything is OK. If you experience
+    problems, this is almost certainly the cause of those problems.
 
-   Please report this as a bug at:
+    Please report this as a bug at:
 
-     https://github.com/beeware/briefcase/issues/new
+      https://github.com/beeware/briefcase/issues/new
 
-   In your report, please including the output from running:
+    In your report, please including the output from running:
 
-     /usr/bin/clang --version
+        $ /usr/bin/clang --version
 
-   from the command prompt.
+    from the command prompt.
 
 *************************************************************************
 """

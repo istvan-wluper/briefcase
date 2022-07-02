@@ -77,13 +77,17 @@ class WindowsMSICreateCommand(WindowsMSIMixin, CreateCommand):
         try:
             install_scope = "perMachine" if app.system_installer else "perUser"
         except AttributeError:
-            # system_installer not defined in config; default to perUser install.
-            install_scope = "perUser"
+            # system_installer not defined in config; default to asking the user
+            install_scope = None
 
         return {
             "version_triple": version_triple,
             "guid": str(guid),
             "install_scope": install_scope,
+            # Template forward compatibility flags
+            # 2022-06-29: #775 added the need to pass for -arch 64 to candle.exe;
+            # Briefcase v0.3.8 didn't use that flag.
+            "_use_arch64": True,
         }
 
     def install_app_support_package(self, app: BaseConfig):
@@ -119,8 +123,7 @@ class WindowsMSIRunCommand(WindowsMSIMixin, RunCommand):
 
         :param app: The config object for the app
         """
-        self.logger.info()
-        self.logger.info(f"[{app.app_name}] Starting app...")
+        self.logger.info("Starting app...", prefix=app.app_name)
         try:
             self.subprocess.run(
                 [
@@ -144,80 +147,83 @@ class WindowsMSIPackageCommand(WindowsMSIMixin, PackageCommand):
 
         :param app: The application to build
         """
-        self.logger.info()
-        self.logger.info(f"[{app.app_name}] Building MSI...")
+        self.logger.info("Building MSI...", prefix=app.app_name)
 
         try:
-            self.logger.info()
             self.logger.info("Compiling application manifest...")
-            self.subprocess.run(
-                [
-                    self.wix.heat_exe,
-                    "dir",
-                    "src",
-                    "-nologo",  # Don't display startup text
-                    "-gg",  # Generate GUIDs
-                    "-sfrag",  # Suppress fragment generation for directories
-                    "-sreg",  # Suppress registry harvesting
-                    "-srd",  # Suppress harvesting the root directory
-                    "-scom",  # Suppress harvesting COM components
-                    "-dr",
-                    f"{app.module_name}_ROOTDIR",  # Root directory reference name
-                    "-cg",
-                    f"{app.module_name}_COMPONENTS",  # Root component group name
-                    "-var",
-                    "var.SourceDir",  # variable to use as the source dir
-                    "-out",
-                    f"{app.app_name}-manifest.wxs",
-                ],
-                check=True,
-                cwd=self.bundle_path(app),
-            )
+            with self.input.wait_bar("Compiling..."):
+                self.subprocess.run(
+                    [
+                        self.wix.heat_exe,
+                        "dir",
+                        "src",
+                        "-nologo",  # Don't display startup text
+                        "-gg",  # Generate GUIDs
+                        "-sfrag",  # Suppress fragment generation for directories
+                        "-sreg",  # Suppress registry harvesting
+                        "-srd",  # Suppress harvesting the root directory
+                        "-scom",  # Suppress harvesting COM components
+                        "-dr",
+                        f"{app.module_name}_ROOTDIR",  # Root directory reference name
+                        "-cg",
+                        f"{app.module_name}_COMPONENTS",  # Root component group name
+                        "-var",
+                        "var.SourceDir",  # variable to use as the source dir
+                        "-out",
+                        f"{app.app_name}-manifest.wxs",
+                    ],
+                    check=True,
+                    cwd=self.bundle_path(app),
+                )
         except subprocess.CalledProcessError as e:
             raise BriefcaseCommandError(
                 f"Unable to generate manifest for app {app.app_name}."
             ) from e
 
         try:
-            self.logger.info()
             self.logger.info("Compiling application installer...")
-            self.subprocess.run(
-                [
-                    self.wix.candle_exe,
-                    "-nologo",  # Don't display startup text
-                    "-ext",
-                    "WixUtilExtension",
-                    "-ext",
-                    "WixUIExtension",
-                    "-dSourceDir=src",
-                    f"{app.app_name}.wxs",
-                    f"{app.app_name}-manifest.wxs",
-                ],
-                check=True,
-                cwd=self.bundle_path(app),
-            )
+            with self.input.wait_bar("Compiling..."):
+                self.subprocess.run(
+                    [
+                        self.wix.candle_exe,
+                        "-nologo",  # Don't display startup text
+                        "-ext",
+                        "WixUtilExtension",
+                        "-ext",
+                        "WixUIExtension",
+                        "-arch",
+                        "x64",
+                        "-dSourceDir=src",
+                        f"{app.app_name}.wxs",
+                        f"{app.app_name}-manifest.wxs",
+                    ],
+                    check=True,
+                    cwd=self.bundle_path(app),
+                )
         except subprocess.CalledProcessError as e:
             raise BriefcaseCommandError(f"Unable to compile app {app.app_name}.") from e
 
         try:
-            self.logger.info()
             self.logger.info("Linking application installer...")
-            self.subprocess.run(
-                [
-                    self.wix.light_exe,
-                    "-nologo",  # Don't display startup text
-                    "-ext",
-                    "WixUtilExtension",
-                    "-ext",
-                    "WixUIExtension",
-                    "-o",
-                    self.distribution_path(app, packaging_format="msi"),
-                    f"{app.app_name}.wixobj",
-                    f"{app.app_name}-manifest.wixobj",
-                ],
-                check=True,
-                cwd=self.bundle_path(app),
-            )
+            with self.input.wait_bar("Linking..."):
+                self.subprocess.run(
+                    [
+                        self.wix.light_exe,
+                        "-nologo",  # Don't display startup text
+                        "-ext",
+                        "WixUtilExtension",
+                        "-ext",
+                        "WixUIExtension",
+                        "-loc",
+                        "unicode.wxl",
+                        "-o",
+                        self.distribution_path(app, packaging_format="msi"),
+                        f"{app.app_name}.wixobj",
+                        f"{app.app_name}-manifest.wixobj",
+                    ],
+                    check=True,
+                    cwd=self.bundle_path(app),
+                )
         except subprocess.CalledProcessError as e:
             raise BriefcaseCommandError(f"Unable to link app {app.app_name}.") from e
 

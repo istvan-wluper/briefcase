@@ -38,8 +38,7 @@ class TemplateUnsupportedVersion(BriefcaseCommandError):
             f"""\
 Could not find template for Python {self.python_version_tag}.
 
-This is likely because Python {self.python_version_tag}
-is not yet supported. You will need to:
+This is likely because Python {self.python_version_tag} is not yet supported. You will need to:
   * Use an older version of Python; or
   * Define your own custom template.
 """
@@ -142,6 +141,7 @@ class BaseCommand(ABC):
 
         # Initialize default logger (replaced when options are parsed).
         self.logger = Log()
+        self.save_log = False
 
     @property
     def create_command(self):
@@ -379,7 +379,8 @@ class BaseCommand(ABC):
 
         # Extract the base default options onto the command
         self.input.enabled = options.pop("input_enabled")
-        self.logger = Log(verbosity=options.pop("verbosity"))
+        self.logger.verbosity = options.pop("verbosity")
+        self.save_log = options.pop("save_log")
 
         return options
 
@@ -401,7 +402,7 @@ class BaseCommand(ABC):
             "--verbosity",
             action="count",
             default=1,
-            help="set the verbosity of output (use -vv for additional debug output)",
+            help="set the verbosity of output",
         )
         parser.add_argument("-V", "--version", action="version", version=__version__)
         parser.add_argument(
@@ -414,6 +415,12 @@ class BaseCommand(ABC):
                 "an error will be raised; otherwise, default answers will be "
                 "assumed."
             ),
+        )
+        parser.add_argument(
+            "--log",
+            action="store_true",
+            dest="save_log",
+            help="Save a detailed log to file. By default, this log file is only created for critical errors.",
         )
 
     def add_options(self, parser):
@@ -471,9 +478,7 @@ class BaseCommand(ABC):
 
         response = self.requests.get(url, stream=True)
         if response.status_code == 404:
-            raise MissingNetworkResourceError(
-                url=url,
-            )
+            raise MissingNetworkResourceError(url=url)
         elif response.status_code != 200:
             raise BadNetworkResourceError(url=url, status_code=response.status_code)
 
@@ -485,9 +490,8 @@ class BaseCommand(ABC):
         if header_value:
             # See also https://tools.ietf.org/html/rfc6266
             value, parameters = parse_header(header_value)
-            if value.split(":", 1)[
-                -1
-            ].strip().lower() == "attachment" and parameters.get("filename"):
+            content_type = value.split(":", 1)[-1].strip().lower()
+            if content_type == "attachment" and parameters.get("filename"):
                 cache_full_name = parameters["filename"]
         cache_name = cache_full_name.split("/")[-1]
         filename = download_path / cache_name
@@ -500,12 +504,12 @@ class BaseCommand(ABC):
                 if total is None:
                     f.write(response.content)
                 else:
-                    downloaded = 0
-                    with self.input.progress_bar(total=int(total)) as progress_bar:
+                    progress_bar = self.input.progress_bar()
+                    task_id = progress_bar.add_task("Downloader", total=int(total))
+                    with progress_bar:
                         for data in response.iter_content(chunk_size=1024 * 1024):
                             f.write(data)
-                            downloaded += len(data)
-                            progress_bar.update(completed=downloaded)
+                            progress_bar.update(task_id, advance=len(data))
         else:
             self.logger.info(f"{cache_name} already downloaded")
         return filename

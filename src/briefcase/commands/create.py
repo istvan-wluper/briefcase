@@ -98,9 +98,9 @@ def write_dist_info(app: BaseConfig, dist_info_path: Path):
     """
     # Create dist-info folder, and write a minimal metadata collection.
     dist_info_path.mkdir(exist_ok=True)
-    with (dist_info_path / "INSTALLER").open("w") as f:
+    with (dist_info_path / "INSTALLER").open("w", encoding="utf-8") as f:
         f.write("briefcase\n")
-    with (dist_info_path / "METADATA").open("w") as f:
+    with (dist_info_path / "METADATA").open("w", encoding="utf-8") as f:
         f.write("Metadata-Version: 2.1\n")
         f.write(f"Briefcase-Version: {briefcase.__version__}\n")
         f.write(f"Name: {app.app_name}\n")
@@ -312,9 +312,7 @@ class CreateCommand(BaseCommand):
                 custom_support_package = False
                 self.logger.info(f"Using support package {support_package_url}")
 
-            if support_package_url.startswith(
-                "https://"
-            ) or support_package_url.startswith("http://"):
+            if support_package_url.startswith(("https://", "http://")):
                 try:
                     self.logger.info(f"... pinned to revision {app.support_revision}")
                     # If a revision has been specified, add the revision
@@ -353,13 +351,13 @@ class CreateCommand(BaseCommand):
         except requests_exceptions.ConnectionError as e:
             raise NetworkFailure("downloading support package") from e
         try:
-            self.logger.info("Unpacking support package...")
-            support_path = self.support_path(app)
-            support_path.mkdir(parents=True, exist_ok=True)
-            # TODO: Py3.6 compatibility; os.fsdecode not required in Py3.7
-            self.shutil.unpack_archive(
-                os.fsdecode(support_filename), extract_dir=os.fsdecode(support_path)
-            )
+            with self.input.wait_bar("Unpacking support package..."):
+                support_path = self.support_path(app)
+                support_path.mkdir(parents=True, exist_ok=True)
+                # TODO: Py3.6 compatibility; os.fsdecode not required in Py3.7
+                self.shutil.unpack_archive(
+                    os.fsdecode(support_filename), extract_dir=os.fsdecode(support_path)
+                )
         except (shutil.ReadError, EOFError) as e:
             raise InvalidSupportPackage(support_package_url) from e
 
@@ -440,25 +438,28 @@ class CreateCommand(BaseCommand):
                 return
             else:
                 target = os.path.join(target, abi)
-        # Install  dependencies
+
+        # Install dependencies
         if app.requires:
-            try:
-                pip = [sys.executable, "-m", "pip"]
-                options = [
-                    "--upgrade",
-                    "--no-user",
-                    f"--target={self.app_packages_path(app)}",
-                ]
-                if self.platform == "android":
-                    pip = [sys.executable, "-m", "androidenv"] + pip
-                    options += ["--no-binary", ",".join(app.requires)]
-                self.subprocess.run(
-                    pip + ["install"] + options + app.requires,
-                    check=True,
-                    env=self.build_env(app),
-                )
-            except subprocess.CalledProcessError as e:
-                raise DependencyInstallError() from e
+            with self.input.wait_bar("Installing app dependencies..."):
+                try:
+                    self.subprocess.run(
+                        [
+                            sys.executable,
+                            "-m",
+                            "pip",
+                            "install",
+                            "--upgrade",
+                            "--no-user",
+                            "--progress-bar",
+                            "off",
+                            f"--target={target}",
+                        ]
+                        + app.requires,
+                        check=True,
+                    )
+                except subprocess.CalledProcessError as e:
+                    raise DependencyInstallError() from e
         else:
             self.logger.info("No application dependencies.")
 
@@ -477,17 +478,17 @@ class CreateCommand(BaseCommand):
         # Install app code.
         if app.sources:
             for src in app.sources:
-                self.logger.info(f"Installing {src}...")
-                original = self.base_path / src
-                target = app_path / original.name
+                with self.input.wait_bar(f"Installing {src}..."):
+                    original = self.base_path / src
+                    target = app_path / original.name
 
-                # Install the new copy of the app code.
-                if not original.exists():
-                    raise MissingAppSources(src)
-                elif original.is_dir():
-                    self.shutil.copytree(original, target)
-                else:
-                    self.shutil.copy(original, target)
+                    # Install the new copy of the app code.
+                    if not original.exists():
+                        raise MissingAppSources(src)
+                    elif original.is_dir():
+                        self.shutil.copytree(original, target)
+                    else:
+                        self.shutil.copy(original, target)
         else:
             self.logger.info(f"No sources defined for {app.app_name}.")
 
@@ -554,11 +555,13 @@ class CreateCommand(BaseCommand):
 
             full_source = self.base_path / source_filename
             if full_source.exists():
-                self.logger.info(f"Installing {source_filename} as {full_role}...")
-                # Make sure the target directory exists
-                target.parent.mkdir(parents=True, exist_ok=True)
-                # Copy the source image to the target location
-                self.shutil.copy(full_source, target)
+                with self.input.wait_bar(
+                    f"Installing {source_filename} as {full_role}..."
+                ):
+                    # Make sure the target directory exists
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    # Copy the source image to the target location
+                    self.shutil.copy(full_source, target)
             else:
                 self.logger.info(
                     f"Unable to find {source_filename} for {full_role}; using default"
@@ -636,40 +639,34 @@ class CreateCommand(BaseCommand):
         if bundle_path.exists():
             self.logger.info()
             confirm = self.input.boolean_input(
-                f"Application {app.app_name} already exists; overwrite", default=False
+                f"Application {app.app_name!r} already exists; overwrite", default=False
             )
             if not confirm:
                 self.logger.error(
-                    f"Aborting creation of app {app.app_name}; existing application will not be overwritten."
+                    f"Aborting creation of app {app.app_name!r}; existing application will not be overwritten."
                 )
                 return
-            self.logger.info()
-            self.logger.info(f"[{app.app_name}] Removing old application bundle...")
+            self.logger.info("Removing old application bundle...", prefix=app.app_name)
             self.shutil.rmtree(bundle_path)
 
-        self.logger.info()
-        self.logger.info(f"[{app.app_name}] Generating application template...")
+        self.logger.info("Generating application template...", prefix=app.app_name)
         self.generate_app_template(app=app)
 
-        self.logger.info()
-        self.logger.info(f"[{app.app_name}] Installing support package...")
+        self.logger.info("Installing support package...", prefix=app.app_name)
         self.install_app_support_package(app=app)
 
-        self.logger.info()
-        self.logger.info(f"[{app.app_name}] Installing dependencies...")
+        self.logger.info("Installing dependencies...", prefix=app.app_name)
         self.install_app_dependencies(app=app)
 
-        self.logger.info()
-        self.logger.info(f"[{app.app_name}] Installing application code...")
+        self.logger.info("Installing application code...", prefix=app.app_name)
         self.install_app_code(app=app)
 
-        self.logger.info()
-        self.logger.info(f"[{app.app_name}] Installing application resources...")
+        self.logger.info("Installing application resources...", prefix=app.app_name)
         self.install_app_resources(app=app)
 
-        self.logger.info()
         self.logger.info(
-            f"[{app.app_name}] Created {self.bundle_path(app).relative_to(self.base_path)}"
+            f"Created {self.bundle_path(app).relative_to(self.base_path)}",
+            prefix=app.app_name,
         )
 
     def verify_tools(self):

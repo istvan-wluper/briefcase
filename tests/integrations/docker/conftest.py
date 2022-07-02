@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from briefcase.console import Log
+from briefcase.console import Console, Log
 from briefcase.integrations.docker import Docker
 from briefcase.integrations.subprocess import Subprocess
 
@@ -11,6 +11,7 @@ from briefcase.integrations.subprocess import Subprocess
 def mock_docker(tmp_path):
     command = MagicMock()
     command.logger = Log()
+    command.input = Console()
     command.base_path = tmp_path / "base"
     command.platform_path = tmp_path / "platform"
     command.bundle_path.return_value = tmp_path / "bundle"
@@ -22,6 +23,18 @@ def mock_docker(tmp_path):
 
     command.subprocess = Subprocess(command)
     command.subprocess._subprocess = MagicMock()
+
+    proc = MagicMock()
+    proc.returncode = 3
+    command.subprocess._subprocess.run.return_value = proc
+
+    # Short circuit the process streamer
+    wait_bar_streamer = MagicMock()
+    wait_bar_streamer.stdout.readline.return_value = ""
+    wait_bar_streamer.poll.return_value = 0
+    command.subprocess._subprocess.Popen.return_value.__enter__.return_value = (
+        wait_bar_streamer
+    )
 
     app = MagicMock()
     app.app_name = "myapp"

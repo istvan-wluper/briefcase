@@ -59,20 +59,21 @@ class DevCommand(BaseCommand):
         :param app: The config object for the app
         """
         if app.requires:
-            try:
-                self.subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "pip",
-                        "install",
-                        "--upgrade",
-                    ]
-                    + app.requires,
-                    check=True,
-                )
-            except subprocess.CalledProcessError as e:
-                raise DependencyInstallError() from e
+            with self.input.wait_bar("Installing dev dependencies..."):
+                try:
+                    self.subprocess.run(
+                        [
+                            sys.executable,
+                            "-m",
+                            "pip",
+                            "install",
+                            "--upgrade",
+                        ]
+                        + app.requires,
+                        check=True,
+                    )
+                except subprocess.CalledProcessError as e:
+                    raise DependencyInstallError() from e
         else:
             self.logger.info("No application dependencies.")
 
@@ -138,13 +139,11 @@ class DevCommand(BaseCommand):
             # If we are not running the app, it means we should update dependencies.
             update_dependencies = True
         if update_dependencies or not dist_info_path.exists():
-            self.logger.info()
-            self.logger.info(f"[{app.app_name}] Installing dependencies...")
+            self.logger.info("Installing dependencies...", prefix=app.app_name)
             self.install_dev_dependencies(app, **options)
             write_dist_info(app, dist_info_path)
 
         if run_app:
-            self.logger.info()
-            self.logger.info(f"[{app.app_name}] Starting in dev mode...")
+            self.logger.info("Starting in dev mode...", prefix=app.app_name)
             env = self.get_environment(app)
             return self.run_dev_app(app, env, **options)

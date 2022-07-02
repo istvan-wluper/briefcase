@@ -4,6 +4,14 @@ from unittest import mock
 import pytest
 from git import exc as git_exceptions
 
+from briefcase.console import Printer
+
+# Stop Rich from inserting line breaks in to long lines of text.
+# Rich does this to prevent individual words being split between
+# two lines in the terminal...however, these additional line breaks
+# cause some tests to fail unexpectedly.
+Printer.console.soft_wrap = True
+
 
 @pytest.fixture
 def mock_git():
@@ -13,13 +21,8 @@ def mock_git():
     return git
 
 
-# preserve print so sanctioned callers can still use it
-_print = print
-
-
 def monkeypatched_print(*arg, **kwargs):
-    """Allow print calls from console.py...raise an error for all other
-    callers."""
+    """Raise an error for calls to print."""
     frame = inspect.currentframe().f_back
     module = inspect.getmodule(frame.f_code)
 
@@ -31,8 +34,6 @@ def monkeypatched_print(*arg, **kwargs):
         pytest.fail(
             "print() should not be invoked directly. Use Log or Console for printing."
         )
-    else:
-        _print(*arg, **kwargs)
 
 
 @pytest.fixture(autouse=True)

@@ -1,7 +1,9 @@
 import json
 import operator
+import os
 import shlex
 import subprocess
+import sys
 import threading
 import time
 
@@ -106,7 +108,7 @@ class Subprocess:
         """
         env = self.command.os.environ.copy()
         if overrides:
-            env.update(**overrides)
+            env.update(overrides)
         return env
 
     def final_kwargs(self, **kwargs):
@@ -141,6 +143,19 @@ class Subprocess:
         if "text" not in kwargs and "universal_newlines" not in kwargs:
             kwargs["text"] = True
 
+        # If we're in text/universal_newlines mode, ensure that there is
+        # an encoding specified. If encoding isn't specified, default to
+        # the system's stdout encoding.
+        # This is for the benefit of Windows, which uses cp437 for console
+        # output when the system encoding is cp1252.
+        # `__stdout__` is used because rich captures and redirects `sys.stdout`.
+        # The fallback to "UTF-8" is needed to catch the case where stdout
+        # is redirected to a non-tty (e.g. during pytest conditions)
+        if kwargs.get("text") or kwargs.get("universal_newlines", False):
+            kwargs.setdefault(
+                "encoding", os.device_encoding(sys.__stdout__.fileno()) or "UTF-8"
+            )
+
         # For Windows, convert start_new_session=True to creation flags
         if self.command.host_os == "Windows":
             try:
@@ -173,20 +188,34 @@ class Subprocess:
 
         return kwargs
 
-    def run(self, args, **kwargs):
-        """A wrapper for subprocess.run()
+    def run(self, args, stream_output=False, **kwargs):
+        """A wrapper for subprocess.run().
+
+        :param args: args for subprocess.run()
+        :param stream_output: simulate run() while streaming the output to the console
+        :param kwargs: keywords args for subprocess.run()
 
         The behavior of this method is identical to subprocess.run(),
         except for:
+         - If a Wait Bar is active and IO is not redirected, subprocess.run()
+           will be simulated so the output can be proxied via stream_output.
          - If the `env` argument is provided, the current system environment
            will be copied, and the contents of env overwritten into that
            environment.
-         - The `text` argument is defaulted to True so all output
-           is returned as strings instead of bytes.
+         - The `text` argument is defaulted to True so all output is returned
+           as strings instead of bytes.
         """
-        # Invoke subprocess.run().
-        # Pass through all arguments as-is.
-        # All exceptions are propagated back to the caller.
+        # If `stream_output` or dynamic screen content (e.g. a Wait Bar) is
+        # active and output is not redirected, use run with output streaming.
+        is_output_redirected = kwargs.get("capture_output") or (
+            kwargs.get("stdout") and kwargs.get("stderr")
+        )
+        if stream_output or (
+            self.command.input.is_output_controlled and not is_output_redirected
+        ):
+            return self._run_and_stream_output(args, **kwargs)
+
+        # Otherwise, invoke run() normally.
         self._log_command(args)
         self._log_environment(kwargs.get("env"))
 
@@ -197,9 +226,58 @@ class Subprocess:
         except subprocess.CalledProcessError as e:
             self._log_return_code(e.returncode)
             raise
-
         self._log_return_code(command_result.returncode)
+
         return command_result
+
+    def _run_and_stream_output(self, args, check=False, **kwargs):
+        """Simulate subprocess.run() while streaming output to the console.
+
+        This is useful when dynamic screen content is active or output should
+        be captured for logging.
+
+        When dynamic screen content like a Wait Bar is active, output can
+        only be printed to the screen via Log or Console to avoid interfering
+        with and likely corrupting the updates to the dynamic screen elements.
+
+        stdout will always be piped so it can be printed to the screen;
+        however, stderr can be piped by the caller so it is available
+        to the caller in the return value...as with subprocess.run().
+
+        Note: the 'timeout' and 'input' arguments are not supported.
+        """
+        if kwargs.get("stdout") and not kwargs.get("stderr"):
+            # This is an unsupported configuration, as it's not clear where stderr
+            # output would be displayed. Either:
+            # * Redirect stderr in addition to stdout; or
+            # * Use check_output() instead of run() to capture console output
+            #   without streaming.
+            raise AssertionError(
+                "Subprocess.run() was invoked while dynamic Rich content is active (or via "
+                "`stream_output`) with stdout redirected while stderr was not redirected."
+            )
+        for arg in [arg for arg in ["timeout", "input"] if arg in kwargs]:
+            raise AssertionError(
+                f"The Subprocess.run() '{arg}' argument is not supported "
+                f"with `stream_output` or while dynamic Rich content is active."
+            )
+
+        # stdout must be piped so the output streamer can print it.
+        kwargs["stdout"] = subprocess.PIPE
+        # if stderr isn't explicitly redirected, then send it to stdout.
+        kwargs.setdefault("stderr", subprocess.STDOUT)
+
+        stderr = None
+        with self.Popen(args, **kwargs) as process:
+            self.stream_output(args[0], process)
+            if process.stderr and kwargs["stderr"] != subprocess.STDOUT:
+                stderr = process.stderr.read()
+            return_code = process.poll()
+
+        if check and return_code:
+            raise subprocess.CalledProcessError(return_code, args, stderr=stderr)
+
+        return subprocess.CompletedProcess(args, return_code, stderr=stderr)
 
     def check_output(self, args, **kwargs):
         """A wrapper for subprocess.check_output()
@@ -359,38 +437,28 @@ class Subprocess:
         )
 
     def _log_environment(self, overrides):
-        """Log the state of environment variables prior to command execution.
-
-        In debug mode, only the updates to the current environment are logged.
-        In deep debug, the entire environment for the command is logged.
+        """Log the environment variables overrides prior to command execution.
 
         :param overrides: The explicit environment passed to the subprocess call;
             can be `None` if there are no explicit environment changes.
         """
-        if self.command.logger.verbosity >= self.command.logger.DEEP_DEBUG:
-            full_env = self.full_env(overrides)
-            self.command.logger.deep_debug("Full Environment:")
-            for env_var, value in full_env.items():
-                self.command.logger.deep_debug(f"    {env_var}={value}")
-
-        elif self.command.logger.verbosity >= self.command.logger.DEBUG:
-            if overrides:
-                self.command.logger.debug("Environment:")
-                for env_var, value in overrides.items():
-                    self.command.logger.debug(f"    {env_var}={value}")
+        if overrides:
+            self.command.logger.debug("Environment Overrides:")
+            for env_var, value in overrides.items():
+                self.command.logger.debug(f"    {env_var}={value}")
 
     def _log_output(self, output, stderr=None):
         """Log the output of the executed command."""
         if output:
-            self.command.logger.deep_debug("Command Output:")
+            self.command.logger.debug("Command Output:")
             for line in ensure_str(output).splitlines():
-                self.command.logger.deep_debug(f"    {line}")
+                self.command.logger.debug(f"    {line}")
 
         if stderr:
-            self.command.logger.deep_debug("Command Error Output (stderr):")
+            self.command.logger.debug("Command Error Output (stderr):")
             for line in ensure_str(stderr).splitlines():
-                self.command.logger.deep_debug(f"    {line}")
+                self.command.logger.debug(f"    {line}")
 
     def _log_return_code(self, return_code):
         """Log the output value of the executed command."""
-        self.command.logger.deep_debug(f"Return code: {return_code}")
+        self.command.logger.debug(f"Return code: {return_code}")

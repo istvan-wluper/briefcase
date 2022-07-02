@@ -71,10 +71,9 @@ class AndroidSDK:
     def cmdline_tools_version(self):
         # This is the version of the Android SDK Command-line tools that
         # are current as of May 2022. These tools can generally self-update,
-        # so using an fixed download URL isn't a problem.
+        # so using a fixed download URL isn't a problem.
         # However, if/when this version number is changed, ensure that the
-        # checks done during verification include any required upgrade
-        # steps.
+        # checks done during verification include any required upgrade steps.
         return "8092744"
 
     @property
@@ -108,6 +107,9 @@ class AndroidSDK:
     @property
     def avd_path(self):
         return self.dot_android_path / "avd"
+
+    def avd_config_filename(self, avd):
+        return self.avd_path / f"{avd}.avd" / "config.ini"
 
     @property
     def env(self):
@@ -155,11 +157,7 @@ class AndroidSDK:
             if sdk.exists():
                 # Ensure licenses have been accepted
                 sdk.verify_license()
-
-                # If the user has requested debug output, output the current
-                # list of packages managed by the SDK manager
-                if command.logger.verbosity >= command.logger.DEBUG:
-                    sdk.list_packages()
+                sdk.list_packages()
 
                 return sdk
             else:
@@ -197,16 +195,12 @@ class AndroidSDK:
             # The sdkmanager binary exists in the `latest` location, and is executable.
             # Ensure licenses have been accepted
             sdk.verify_license()
-
-            # If the user has requested debug output, output the current
-            # list of packages managed by the SDK manager
-            if command.logger.verbosity >= command.logger.DEBUG:
-                sdk.list_packages()
+            sdk.list_packages()
 
             return sdk
         elif (sdk_root_path / "tools").exists():
             # The legacy SDK Tools exist. Delete them.
-            command.logger.info(
+            command.logger.warning(
                 f"""
 *************************************************************************
 ** WARNING: Upgrading Android SDK tools                                **
@@ -223,12 +217,15 @@ class AndroidSDK:
     in {sdk.avd_path} matching the emulator name.
 
 *************************************************************************
-
 """
             )
             command.shutil.rmtree(sdk_root_path)
 
         if install:
+            command.logger.info(
+                "The Android SDK was not found; downloading and installing...",
+                prefix=cls.name,
+            )
             sdk.install()
             return sdk
         else:
@@ -275,44 +272,46 @@ class AndroidSDK:
         #  4. Drop a marker file named <sdk_path>/cmdline-tools/<version> so we can track
         #     the version that was installed.
 
-        self.command.logger.info("Install Android SDK Command-Line Tools...")
-        self.cmdline_tools_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            self.command.shutil.unpack_archive(
-                cmdline_tools_zip_path, extract_dir=self.cmdline_tools_path.parent
-            )
-        except (shutil.ReadError, EOFError) as e:
-            raise BriefcaseCommandError(
-                f"""\
+        with self.command.input.wait_bar(
+            "Installing Android SDK Command-Line Tools..."
+        ):
+            self.cmdline_tools_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                self.command.shutil.unpack_archive(
+                    cmdline_tools_zip_path, extract_dir=self.cmdline_tools_path.parent
+                )
+            except (shutil.ReadError, EOFError) as e:
+                raise BriefcaseCommandError(
+                    f"""\
 Unable to unpack Android SDK Command-Line Tools ZIP file. The download may have been interrupted
 or corrupted.
 
 Delete {cmdline_tools_zip_path} and run briefcase again.
 """
-            ) from e
+                ) from e
 
-        # If there's an existing version of the cmdline tools (or the version marker), delete them.
-        if self.cmdline_tools_path.exists():
-            self.command.shutil.rmtree(self.cmdline_tools_path)
-        if self.cmdline_tools_version_path.exists():
-            self.command.os.unlink(self.cmdline_tools_version_path)
+            # If there's an existing version of the cmdline tools (or the version marker), delete them.
+            if self.cmdline_tools_path.exists():
+                self.command.shutil.rmtree(self.cmdline_tools_path)
+            if self.cmdline_tools_version_path.exists():
+                self.command.os.unlink(self.cmdline_tools_version_path)
 
-        # Rename the top level zip content to the final name
-        (self.cmdline_tools_path.parent / "cmdline-tools").rename(
-            self.cmdline_tools_path
-        )
-        # Touch a file with the version that was installed.
-        self.cmdline_tools_version_path.touch()
+            # Rename the top level zip content to the final name
+            (self.cmdline_tools_path.parent / "cmdline-tools").rename(
+                self.cmdline_tools_path
+            )
+            # Touch a file with the version that was installed.
+            self.cmdline_tools_version_path.touch()
 
-        # Zip file no longer needed once unpacked.
-        cmdline_tools_zip_path.unlink()
+            # Zip file no longer needed once unpacked.
+            cmdline_tools_zip_path.unlink()
 
-        # Python zip unpacking ignores permission metadata.
-        # On non-Windows, we manually fix permissions.
-        if self.command.host_os != "Windows":
-            for binpath in (self.cmdline_tools_path / "bin").glob("*"):
-                if not self.command.os.access(binpath, self.command.os.X_OK):
-                    binpath.chmod(0o755)
+            # Python zip unpacking ignores permission metadata.
+            # On non-Windows, we manually fix permissions.
+            if self.command.host_os != "Windows":
+                for binpath in (self.cmdline_tools_path / "bin").glob("*"):
+                    if not self.command.os.access(binpath, self.command.os.X_OK):
+                        binpath.chmod(0o755)
 
         # Licences must be accepted.
         self.verify_license()
@@ -338,14 +337,12 @@ its output for errors.
             ) from e
 
     def list_packages(self):
-        """List the packages currently manged by the Android SDK."""
+        """In debug output, list the packages currently managed by the SDK."""
         try:
-            # Using subprocess.run() with no I/O redirection so the user sees
-            # the full output and can send input.
-            self.command.subprocess.run(
+            # check_output always writes its output to debug
+            self.command.subprocess.check_output(
                 [os.fsdecode(self.sdkmanager_path), "--list_installed"],
                 env=self.env,
-                check=True,
             )
         except subprocess.CalledProcessError as e:
             raise BriefcaseCommandError(
@@ -372,9 +369,9 @@ its output for errors.
 
         self.command.logger.info(
             """
-    The Android tools provided by Google have license terms that you must accept
-    before you may use those tools.
-    """
+The Android tools provided by Google have license terms that you must accept
+before you may use those tools.
+"""
         )
         try:
             # Using subprocess.run() with no I/O redirection so the user sees
@@ -404,34 +401,215 @@ connection.
             )
 
     def verify_emulator(self):
-        """Verify that Android emulator has been installed.
+        """Verify that Android emulator has been installed, and is in a
+        runnable state.
 
         Raises an error if the emulator can't be installed.
         """
-        if (self.root_path / "emulator").exists():
-            # If the user has requested debug output, output the current
-            # list of packages managed by the SDK manager
-            if self.command.logger.verbosity >= self.command.logger.DEBUG:
-                self.list_packages()
+        # Ensure the `platforms` folder exists.
+        # See the discussion on #766 for details; as of June 2022, if this folder
+        # doesn't exist, the emulator won't start, raising the error:
+        #
+        #    PANIC: Cannot find AVD system path. Please define ANDROID_SDK_ROOT
+        #
+        # Creating an empty platforms folder is enough to overcome this. This folder
+        # will be created automatically when you build a project; but if you have a
+        # clean Android SDK install that hasn't been used to build a project, it
+        # might be missing.
+        (self.root_path / "platforms").mkdir(exist_ok=True)
 
+        if (self.root_path / "emulator").exists():
+            self.command.logger.debug("Android emulator is already installed.")
             return
 
-        self.command.logger.info("Downloading the Android emulator and system image...")
+        self.command.logger.info("Downloading the Android emulator...")
         try:
             self.command.subprocess.run(
                 [
                     os.fsdecode(self.sdkmanager_path),
                     "platform-tools",
                     "emulator",
-                    f"system-images;android-31;default;{self.emulator_abi}",
                 ],
                 env=self.env,
                 check=True,
             )
         except subprocess.CalledProcessError as e:
             raise BriefcaseCommandError(
-                "Error while installing Android emulator and system image."
+                "Error while installing Android emulator."
             ) from e
+
+    def verify_avd(self, avd):
+        """Verify that the AVD has the necessary system components to launch.
+
+        This includes:
+            * AVD system image
+            * Emulator skin
+
+        :param avd: The AVD name to verify.
+        """
+        # Read the AVD configuration to retrieve the system image.
+        # This is stored in the AVD configuration file with the key:
+        #   image.sysdir.1=system-images/android-31/default/arm64-v8a/
+        try:
+            avd_config = self.avd_config(avd)
+        except FileNotFoundError:
+            raise BriefcaseCommandError(f"Unable to read configuration of AVD @{avd}")
+
+        try:
+            system_image_path = Path(avd_config["image.sysdir.1"])
+
+            # Convert the path into a system image name, and verify it.
+            self.verify_system_image(";".join(system_image_path.parts))
+        except KeyError:
+            self.command.logger.warning(
+                f"""
+*************************************************************************
+** WARNING: Unable to determine AVD system image                       **
+*************************************************************************
+
+    Briefcase was unable to determine the system image of the Android
+    emulator AVD {avd!r} from it's configuration file.
+
+    Briefcase will proceed assuming the emulator is correctly
+    configured. If you experience any problems running the emulator,
+    this may be the cause of the problem.
+
+*************************************************************************
+"""
+            )
+
+        try:
+            skin = avd_config["skin.name"]
+            skin_path = Path(avd_config["skin.path"])
+
+            if skin_path != Path("skins") / skin:
+                self.command.logger.warning(
+                    f"""
+*************************************************************************
+** WARNING: Unrecognized device skin                                   **
+*************************************************************************
+
+    Briefcase does not recognize the skin {skin!r} used by the
+    Android emulator AVD {avd!r}.
+
+    Briefcase will proceed assuming the emulator is correctly
+    configured. If you experience any problems running the emulator,
+    this may be the cause of the problem.
+
+*************************************************************************
+"""
+                )
+            else:
+                # Convert the path into a system image name, and verify it.
+                self.verify_emulator_skin(skin)
+
+        except KeyError:
+            self.command.logger.debug(f"Device {avd!r} doesn't define a skin.")
+
+    def verify_system_image(self, system_image):
+        """Verify that the required system image is installed.
+
+        :param system_image: The SDKManager identifier for the system
+            image (e.g., ``"system-images;android-31;default;x86_64"``)
+        """
+        # Look for the directory named as a system image.
+        # If it exists, we already have the system image.
+        system_image_parts = system_image.split(";")
+
+        if len(system_image_parts) < 4 or system_image_parts[0] != "system-images":
+            raise BriefcaseCommandError(
+                f"{system_image!r} is not a valid system image name."
+            )
+
+        if system_image_parts[-1] != self.emulator_abi:
+            self.command.logger.warning(
+                f"""
+*************************************************************************
+** WARNING: Unexpected emulator ABI                                    **
+*************************************************************************
+
+    The system image {system_image!r}
+    does not match the architecture of this computer ({self.emulator_abi}).
+
+    Briefcase will proceed assuming the emulator is correctly
+    configured. If you experience any problems running the emulator,
+    this may be the cause of the problem.
+
+*************************************************************************
+"""
+            )
+
+        # Convert the system image into a path where that system image
+        # would be expected, and see if the location exists.
+        system_image_path = self.root_path
+        for part in system_image_parts:
+            system_image_path = system_image_path / part
+
+        if system_image_path.exists():
+            # Found the system image.
+            return
+
+        # System image not found; download it.
+        self.command.logger.info(
+            f"Downloading the {system_image!r} Android system image...",
+            prefix=self.name,
+        )
+        try:
+            self.command.subprocess.run(
+                [
+                    os.fsdecode(self.sdkmanager_path),
+                    system_image,
+                ],
+                env=self.env,
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            raise BriefcaseCommandError(
+                f"Error while installing the {system_image!r} Android system image."
+            ) from e
+
+    def verify_emulator_skin(self, skin):
+        """Verify that an emulator skin is available.
+
+        A human-readable list of available skins can be found here:
+
+            https://android.googlesource.com/platform/tools/adt/idea/+/refs/heads/mirror-goog-studio-main/artwork/resources/device-art-resources/
+
+        :param skin: The name of the skin to obtain
+        """
+        # Check for a device skin. If it doesn't exist, download it.
+        skin_path = self.root_path / "skins" / skin
+        if skin_path.exists():
+            self.command.logger.debug(f"Device skin {skin!r} already exists.")
+            return
+
+        self.command.logger.info(f"Obtaining {skin} device skin...", prefix=self.name)
+
+        skin_url = (
+            "https://android.googlesource.com/platform/tools/adt/idea/"
+            "+archive/refs/heads/mirror-goog-studio-main/"
+            f"artwork/resources/device-art-resources/{skin}.tar.gz"
+        )
+
+        try:
+            skin_tgz_path = self.command.download_url(
+                url=skin_url,
+                download_path=self.root_path,
+            )
+        except requests_exceptions.ConnectionError as e:
+            raise NetworkFailure(f"download {skin} device skin") from e
+
+        # Unpack skin archive
+        with self.command.input.wait_bar("Installing device skin..."):
+            try:
+                self.command.shutil.unpack_archive(skin_tgz_path, extract_dir=skin_path)
+            except (shutil.ReadError, EOFError) as err:
+                raise BriefcaseCommandError(
+                    f"Unable to unpack {skin} device skin."
+                ) from err
+
+            # Delete the downloaded file.
+            skin_tgz_path.unlink()
 
     def emulators(self):
         """Find the list of emulators that are available."""
@@ -613,7 +791,7 @@ Use the -d/--device option to explicitly specify the device to use.
 """
                 ) from e
 
-        # Proces the user's choice
+        # Process the user's choice
         if choice is None:
             # Create a new emulator. No device ID or AVD.
             device = None
@@ -645,8 +823,7 @@ Use the -d/--device option to explicitly specify the device to use.
                 f"""
 In future, you can specify this device by running:
 
-    briefcase run android -d @{avd}
-
+    $ briefcase run android -d @{avd}
 """
             )
         elif device:
@@ -654,8 +831,7 @@ In future, you can specify this device by running:
                 f"""
 In future, you can specify this device by running:
 
-    briefcase run android -d {device}
-
+    $ briefcase run android -d {device}
 """
             )
 
@@ -698,7 +874,7 @@ a default name '{default_avd}'.
                 self.command.logger.info(
                     f"""
 '{avd}' is not a valid emulator name. An emulator name may only contain
-letters, numbers, hyphens and underscores
+letters, numbers, hyphens and underscores.
 
 """
                 )
@@ -717,76 +893,52 @@ An emulator named '{avd}' already exists.
         device_type = "pixel"
         skin = "pixel_3a"
 
-        try:
-            self.command.logger.info()
-            self.command.logger.info(f"Creating Android emulator {avd}...")
-            self.command.logger.info()
-            self.command.subprocess.check_output(
-                [
-                    os.fsdecode(self.avdmanager_path),
-                    "--verbose",
-                    "create",
-                    "avd",
-                    "--name",
-                    avd,
-                    "--abi",
-                    self.emulator_abi,
-                    "--package",
-                    f"system-images;android-31;default;{self.emulator_abi}",
-                    "--device",
-                    device_type,
-                ],
-                env=self.env,
-                stderr=subprocess.STDOUT,
-            )
-        except subprocess.CalledProcessError as e:
-            raise BriefcaseCommandError("Unable to create Android emulator") from e
+        # Ensure the required skin is available.
+        self.verify_emulator_skin(skin)
 
-        # Check for a device skin. If it doesn't exist, download it.
-        skin_path = self.root_path / "skins" / skin
-        if skin_path.exists():
-            self.command.logger.info(f"Device skin '{skin}' already exists")
-        else:
-            self.command.logger.info("Obtaining device skin...")
-            skin_url = (
-                "https://android.googlesource.com/platform/tools/adt/idea/"
-                "+archive/refs/heads/mirror-goog-studio-master-dev/"
-                f"artwork/resources/device-art-resources/{skin}.tar.gz"
-            )
+        # TODO: Provide a list of options for system images.
+        system_image = f"system-images;android-31;default;{self.emulator_abi}"
 
+        # Ensure the required system image is available.
+        self.verify_system_image(system_image)
+
+        with self.command.input.wait_bar(f"Creating Android emulator {avd}..."):
             try:
-                skin_tgz_path = self.command.download_url(
-                    url=skin_url,
-                    download_path=self.root_path,
+                self.command.subprocess.check_output(
+                    [
+                        os.fsdecode(self.avdmanager_path),
+                        "--verbose",
+                        "create",
+                        "avd",
+                        "--name",
+                        avd,
+                        "--abi",
+                        self.emulator_abi,
+                        "--package",
+                        system_image,
+                        "--device",
+                        device_type,
+                    ],
+                    env=self.env,
+                    stderr=subprocess.STDOUT,
                 )
-            except requests_exceptions.ConnectionError as e:
-                raise NetworkFailure(f"download {skin} device skin") from e
+            except subprocess.CalledProcessError as e:
+                raise BriefcaseCommandError("Unable to create Android emulator") from e
 
-            # Unpack skin archive
-            try:
-                self.command.shutil.unpack_archive(skin_tgz_path, extract_dir=skin_path)
-            except (shutil.ReadError, EOFError) as err:
-                raise BriefcaseCommandError(
-                    f"Unable to unpack {skin} device skin"
-                ) from err
-
-            # Delete the downloaded file.
-            skin_tgz_path.unlink()
-
-        self.command.logger.info("Adding extra device configuration...")
-        self.update_emulator_config(
-            avd,
-            {
-                "avd.id": avd,
-                "avd.name": avd,
-                "disk.dataPartition.size": "4096M",
-                "hw.keyboard": "yes",
-                "skin.dynamic": "yes",
-                "skin.name": skin,
-                "skin.path": f"skins/{skin}",
-                "showDeviceFrame": "yes",
-            },
-        )
+        with self.command.input.wait_bar("Adding extra device configuration..."):
+            self.update_emulator_config(
+                avd,
+                {
+                    "avd.id": avd,
+                    "avd.name": avd,
+                    "disk.dataPartition.size": "4096M",
+                    "hw.keyboard": "yes",
+                    "skin.dynamic": "yes",
+                    "skin.name": skin,
+                    "skin.path": f"skins/{skin}",
+                    "showDeviceFrame": "yes",
+                },
+            )
 
         self.command.logger.info(
             f"""
@@ -794,11 +946,28 @@ Android emulator '{avd}' created.
 
 In future, you can specify this device by running:
 
-briefcase run android -d @{avd}
+    $ briefcase run android -d @{avd}
 """
         )
 
         return avd
+
+    def avd_config(self, avd):
+        """Obtain the AVD configuration as key-value pairs.
+
+        :params avd: The AVD whose config will be retrieved
+        """
+        # Parse the existing config into key-value pairs
+        avd_config = {}
+        with self.avd_config_filename(avd).open("r") as f:
+            for line in f:
+                try:
+                    key, value = line.rstrip().split("=", 1)
+                    avd_config[key.strip()] = value.strip()
+                except ValueError:
+                    pass
+
+        return avd_config
 
     def update_emulator_config(self, avd, updates):
         """Update the AVD configuration with specific values.
@@ -807,22 +976,13 @@ briefcase run android -d @{avd}
         :params updates: A dictionary containing the new key-value to
             add to the device configuration.
         """
-        # Parse the existing config into key-value pairs
-        avd_config_filename = self.avd_path / f"{avd}.avd" / "config.ini"
-        avd_config = {}
-        with avd_config_filename.open("r") as f:
-            for line in f:
-                try:
-                    key, value = line.rstrip().split("=", 1)
-                    avd_config[key] = value
-                except ValueError:
-                    pass
+        avd_config = self.avd_config(avd)
 
         # Augment the config with the new key-values pairs
         avd_config.update(updates)
 
         # Write the update configuration.
-        with avd_config_filename.open("w") as f:
+        with self.avd_config_filename(avd).open("w") as f:
             for key, value in avd_config.items():
                 f.write(f"{key}={value}\n")
 
@@ -835,7 +995,6 @@ briefcase run android -d @{avd}
         """
         if avd not in set(self.emulators()):
             raise InvalidDeviceError("emulator AVD", avd)
-        self.command.logger.info(f"Starting emulator {avd}...")
         emulator_popen = self.command.subprocess.Popen(
             [
                 os.fsdecode(self.emulator_path),
@@ -856,14 +1015,10 @@ briefcase run android -d @{avd}
 
         # Step 1: Wait for the device to appear so we can get an
         # ADB instance for the new device.
-        self.command.logger.info()
-        with self.command.input.wait_bar(
-            "Waiting for emulator to start..."
-        ) as startup_wait_bar:
+        with self.command.input.wait_bar("Starting emulator..."):
             adb = None
             known_devices = set()
             while adb is None:
-                startup_wait_bar.update()
                 if emulator_popen.poll() is not None:
                     raise BriefcaseCommandError(
                         f"""\
@@ -871,7 +1026,7 @@ Android emulator was unable to start!
 
 Try starting the emulator manually by running:
 
-    {' '.join(str(arg) for arg in emulator_popen.args)}
+    $ {' '.join(str(arg) for arg in emulator_popen.args)}
 
 Resolve any problems you discover, then try running your app again. You may
 find this page helpful in diagnosing emulator problems.
@@ -900,27 +1055,27 @@ find this page helpful in diagnosing emulator problems.
                 self.sleep(2)
 
         # Phase 2: Wait for the boot process to complete
-        with self.command.input.wait_bar("Booting...") as boot_wait_bar:
-            while not adb.has_booted():
-                if emulator_popen.poll() is not None:
-                    raise BriefcaseCommandError(
-                        f"""\
+        if not adb.has_booted():
+            with self.command.input.wait_bar("Booting emulator..."):
+                while not adb.has_booted():
+                    if emulator_popen.poll() is not None:
+                        raise BriefcaseCommandError(
+                            f"""\
 Android emulator was unable to boot!
 
 Try starting the emulator manually by running:
 
-    {' '.join(str(arg) for arg in emulator_popen.args)}
+    $ {' '.join(str(arg) for arg in emulator_popen.args)}
 
 Resolve any problems you discover, then try running your app again. You may
 find this page helpful in diagnosing emulator problems.
 
     https://developer.android.com/studio/run/emulator-acceleration#accel-vm
 """
-                    )
+                        )
 
-                # Try again in 2 seconds...
-                self.sleep(2)
-                boot_wait_bar.update()
+                    # Try again in 2 seconds...
+                    self.sleep(2)
 
         # Return the device ID and full name.
         return device, full_name
@@ -1012,7 +1167,7 @@ class ADB:
         Returns `None` on success; raises an exception on failure.
         """
         try:
-            self.run("install", apk_path)
+            self.run("install", "-r", apk_path)
         except subprocess.CalledProcessError as e:
             raise BriefcaseCommandError(
                 f"Unable to install APK {apk_path} on {self.device}"
@@ -1094,8 +1249,7 @@ Activity class not found while starting app.
     def logcat(self):
         """Start tailing the adb log for the device."""
         try:
-            # Using subprocess.run() with no I/O redirection so the user sees
-            # the full output and can send input.
+            # stream output so it's captured in logging
             self.command.subprocess.run(
                 [
                     os.fsdecode(self.android_sdk.adb_path),
@@ -1109,6 +1263,12 @@ Activity class not found while starting app.
                 ],
                 env=self.android_sdk.env,
                 check=True,
+                stream_output=True,
             )
         except subprocess.CalledProcessError as e:
-            raise BriefcaseCommandError("Error starting ADB logcat.") from e
+            # If the user sends CTRL+C:
+            #  - on Windows, adb returns 0xC000013A (STATUS_CONTROL_C_EXIT)
+            #  - on Linux/macOS, adb returns -2.
+            # Exit normally since the user was instructed to use CTRL+C.
+            if e.returncode not in {-2, 0xC000013A}:
+                raise BriefcaseCommandError("Error starting ADB logcat.") from e

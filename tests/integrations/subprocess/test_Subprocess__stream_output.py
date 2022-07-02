@@ -1,3 +1,4 @@
+from time import sleep
 from unittest import mock
 
 import pytest
@@ -10,28 +11,6 @@ def mock_sub(mock_sub):
     # also mock cleanup for stream output testing
     mock_sub.cleanup = mock.MagicMock()
     return mock_sub
-
-
-@pytest.fixture
-def popen_process():
-    process = mock.MagicMock()
-
-    # There are extra empty strings at the end to simulate readline
-    # continuously returning "" once it reaches EOF
-    process.stdout.readline.side_effect = [
-        "output line 1\n",
-        "\n",
-        "output line 3\n",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-    ]
-    process.poll.side_effect = [None, None, None, -3]
-
-    return process
 
 
 def test_output(mock_sub, popen_process, capsys):
@@ -48,7 +27,16 @@ def test_output_debug(mock_sub, popen_process, capsys):
 
     mock_sub.stream_output("testing", popen_process)
 
-    assert capsys.readouterr().out == ("output line 1\n" "\n" "output line 3\n")
+    # fmt: off
+    expected_output = (
+        "output line 1\n"
+        "\n"
+        "output line 3\n"
+        ">>> Return code: -3\n"
+    )
+    # fmt: on
+    assert capsys.readouterr().out == expected_output
+
     mock_sub.cleanup.assert_called_once_with("testing", popen_process)
 
 
@@ -58,9 +46,16 @@ def test_output_deep_debug(mock_sub, popen_process, capsys):
 
     mock_sub.stream_output("testing", popen_process)
 
-    assert capsys.readouterr().out == (
-        "output line 1\n" "\n" "output line 3\n" ">>> Return code: -3\n"
+    # fmt: off
+    expected_output = (
+        "output line 1\n"
+        "\n"
+        "output line 3\n"
+        ">>> Return code: -3\n"
     )
+    # fmt: on
+    assert capsys.readouterr().out == expected_output
+
     mock_sub.cleanup.assert_called_once_with("testing", popen_process)
 
 
@@ -68,8 +63,18 @@ def test_keyboard_interrupt(mock_sub, popen_process, capsys):
     """KeyboardInterrupt is suppressed if user sends CTRL+C and all output is
     printed."""
 
-    def send_ctrl_c():
-        raise KeyboardInterrupt()
+    def slow_poll(*a):
+        sleep(0.5)
+        return -3
+
+    # this helps ensure that the output streaming thread doesn't
+    # finish before is_alive() is called and therefore ensures
+    # that stop_func is always executed during this test.
+    popen_process.poll = mock.MagicMock()
+    popen_process.poll.side_effect = slow_poll
+
+    send_ctrl_c = mock.MagicMock()
+    send_ctrl_c.side_effect = [False, KeyboardInterrupt]
 
     mock_sub.stream_output("testing", popen_process, stop_func=send_ctrl_c)
 
